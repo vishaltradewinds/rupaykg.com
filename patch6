@@ -1,0 +1,696 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000000000000000000000000000000000000..d0d065e412ec175e8962e0c961ed76ef87a7a2c6
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,7 @@
++ENV=prod
++SYSTEM_STATUS=ACTIVE
++MONGODB_URI=mongodb://mongo:27017
++JWT_SECRET=change-me-strong-secret
++BACKEND_CORS_ORIGINS=https://your-domain.com
++NEXT_PUBLIC_API_URL=/api
++NEXT_PUBLIC_WALLET_BEARER_TOKEN=
+diff --git a/README.md b/README.md
+index 609052024772d3d3dfff6de868a1b7d742dcc9cd..31cb08f735c2f07d469fe1ceab51274717d8e564 100644
+--- a/README.md
++++ b/README.md
+@@ -1,2 +1,128 @@
+-# rupaykg.com
+-Enterprise-grade waste-to-value fullstack platform (FastAPI + Next.js)
++# RupayKG Enterprise
++
++RupayKG is a monorepo with:
++- **FastAPI backend** in `backend/`
++- **Next.js frontend** in `frontend/`
++
++This project now includes a production-ready Docker Compose setup for **Hostinger VPS** deployments.
++
++## 1) Environment setup
++
++Copy and edit the environment file before any deployment:
++
++```bash
++cp .env.example .env
++```
++
++Minimum production values:
++- `ENV=prod`
++- `SYSTEM_STATUS=ACTIVE`
++- `MONGODB_URI=mongodb://mongo:27017` (for Docker Compose internal network)
++- `JWT_SECRET=<strong-random-secret>`
++- `BACKEND_CORS_ORIGINS=https://your-domain.com`
++- `NEXT_PUBLIC_WALLET_BEARER_TOKEN=<optional>`
++
++> For Hostinger setup in this repo, `NEXT_PUBLIC_API_URL` is injected as `/api` in compose so frontend and backend work under one domain.
++
++---
++
++## 2) Deploying to Hostinger VPS (recommended)
++
++### Prerequisites on VPS
++
++Install Docker + Docker Compose plugin on Ubuntu:
++
++```bash
++sudo apt-get update
++sudo apt-get install -y ca-certificates curl gnupg
++sudo install -m 0755 -d /etc/apt/keyrings
++curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
++sudo chmod a+r /etc/apt/keyrings/docker.gpg
++
++echo \
++  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
++  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
++  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
++
++sudo apt-get update
++sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
++```
++
++### Deployment steps
++
++```bash
++git clone <your-repo-url> /opt/rupaykg-enterprise
++cd /opt/rupaykg-enterprise
++cp .env.example .env
++nano .env
++
++./deploy/hostinger-deploy.sh
++```
++
++This launches:
++- `frontend` on internal port `3000`
++- `backend` on internal port `8080`
++- `mongo` for persistence
++- `nginx` exposing ports `80/443`
++
++### Health check
++
++```bash
++curl http://<server-ip>/api/health
++```
++
++Expected response:
++
++```json
++{"status":"ok"}
++```
++
++---
++
++## 3) TLS/HTTPS on Hostinger
++
++The Nginx container includes paths for Let's Encrypt cert mounting:
++- `deploy/certbot/conf`
++- `deploy/certbot/www`
++
++You can attach certbot in your VPS workflow and mount issued certs into Nginx, then extend `deploy/nginx/default.conf` for SSL server blocks.
++
++---
++
++## 4) Local development
++
++### Frontend
++
++```bash
++cd frontend
++npm install
++npm run dev
++```
++
++### Backend
++
++```bash
++cd backend
++python -m venv .venv
++source .venv/bin/activate
++pip install -r requirements.txt
++uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
++```
++
++---
++
++## 5) Useful operations on VPS
++
++```bash
++# service status
++docker compose -f deploy/docker-compose.hostinger.yml ps
++
++# logs
++docker compose -f deploy/docker-compose.hostinger.yml logs -f --tail=100
++
++# restart
++docker compose -f deploy/docker-compose.hostinger.yml restart
++
++# shutdown
++docker compose -f deploy/docker-compose.hostinger.yml down
++```
+diff --git a/backend/.dockerignore b/backend/.dockerignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..d36a828b07c289930dc9dbe36aff1b872506f5ce
+--- /dev/null
++++ b/backend/.dockerignore
+@@ -0,0 +1,5 @@
++__pycache__
++*.pyc
++*.pyo
++*.pyd
++.venv
+diff --git a/backend/Dockerfile b/backend/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb95c54262cdc8aa933da706937cdfaa3ed7b8d9
+--- /dev/null
++++ b/backend/Dockerfile
+@@ -0,0 +1,15 @@
++FROM python:3.11-slim
++
++WORKDIR /app
++
++ENV PYTHONDONTWRITEBYTECODE=1
++ENV PYTHONUNBUFFERED=1
++
++COPY requirements.txt .
++RUN pip install --no-cache-dir -r requirements.txt
++
++COPY app ./app
++
++EXPOSE 8080
++
++CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+diff --git a/backend/app/core/config.py b/backend/app/core/config.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e27431ebd4c1a5267e2e586065eb39091514147c
+--- /dev/null
++++ b/backend/app/core/config.py
+@@ -0,0 +1,17 @@
++from pydantic import BaseSettings
++
++
++class Settings(BaseSettings):
++    ENV: str = "prod"
++    SYSTEM_STATUS: str = "ACTIVE"
++    MONGODB_URI: str = "mongodb://localhost:27017"
++    JWT_SECRET: str = "change-me"
++    BACKEND_CORS_ORIGINS: str = "*"
++
++    CASHFREE_CLIENT_ID: str | None = None
++    CASHFREE_CLIENT_SECRET: str | None = None
++    RAZORPAY_KEY_ID: str | None = None
++    RAZORPAY_KEY_SECRET: str | None = None
++
++
++settings = Settings()
+diff --git a/backend/app/core/database.py b/backend/app/core/database.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..087c2e5e264d6d758e32fcdee680c7e787be8b4a
+--- /dev/null
++++ b/backend/app/core/database.py
+@@ -0,0 +1,6 @@
++
++from motor.motor_asyncio import AsyncIOMotorClient
++from app.core.config import settings
++
++client = AsyncIOMotorClient(settings.MONGODB_URI)
++db = client.rupaykg
+diff --git a/backend/app/core/security.py b/backend/app/core/security.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5d8894f7d309c734dfae4bf68a73f15046a98ebc
+--- /dev/null
++++ b/backend/app/core/security.py
+@@ -0,0 +1,20 @@
++
++from datetime import datetime, timedelta
++from jose import jwt, JWTError
++from fastapi import Depends, HTTPException
++from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
++from app.core.config import settings
++
++security = HTTPBearer()
++ALGORITHM = "HS256"
++
++def create_access_token(user_id: str):
++    payload = {"sub": user_id, "exp": datetime.utcnow() + timedelta(hours=24)}
++    return jwt.encode(payload, settings.JWT_SECRET, algorithm=ALGORITHM)
++
++def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
++    try:
++        payload = jwt.decode(creds.credentials, settings.JWT_SECRET, algorithms=[ALGORITHM])
++        return payload["sub"]
++    except JWTError:
++        raise HTTPException(401, "Invalid token")
+diff --git a/backend/app/main.py b/backend/app/main.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7a2e1294774483cbed078c5ac5433298ca0cefa8
+--- /dev/null
++++ b/backend/app/main.py
+@@ -0,0 +1,32 @@
++from fastapi import FastAPI, HTTPException
++from fastapi.middleware.cors import CORSMiddleware
++
++from app.core.config import settings
++from app.routers import auth, verification, wallet, waste, withdrawal
++
++app = FastAPI(title="RupayKg API", version="1.0.0")
++
++allowed_origins = [origin.strip() for origin in settings.BACKEND_CORS_ORIGINS.split(",") if origin.strip()]
++allow_all_origins = allowed_origins == ["*"]
++
++app.add_middleware(
++    CORSMiddleware,
++    allow_origins=["*"] if allow_all_origins else allowed_origins,
++    allow_credentials=not allow_all_origins,
++    allow_methods=["*"],
++    allow_headers=["*"],
++)
++
++
++@app.get("/health")
++def health():
++    if settings.SYSTEM_STATUS != "ACTIVE":
++        raise HTTPException(503, "System paused")
++    return {"status": "ok"}
++
++
++app.include_router(auth.router)
++app.include_router(waste.router)
++app.include_router(verification.router)
++app.include_router(wallet.router)
++app.include_router(withdrawal.router)
+diff --git a/backend/app/routers/auth.py b/backend/app/routers/auth.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7b69284439b7645a9c7f41bc830fec5d67545da7
+--- /dev/null
++++ b/backend/app/routers/auth.py
+@@ -0,0 +1,16 @@
++
++from fastapi import APIRouter
++from uuid import uuid4
++from app.core.database import db
++from app.core.security import create_access_token
++
++router = APIRouter(prefix="/auth", tags=["Auth"])
++
++@router.post("/login")
++async def login(phone: str):
++    user = await db.users.find_one({"phone": phone})
++    if not user:
++        user = {"_id": str(uuid4()), "phone": phone}
++        await db.users.insert_one(user)
++        await db.wallets.insert_one({"user_id": user["_id"], "available_balance": 0})
++    return {"access_token": create_access_token(user["_id"])}
+diff --git a/backend/app/routers/verification.py b/backend/app/routers/verification.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..654ac1d56870ca36c691e92d964397033f84bce8
+--- /dev/null
++++ b/backend/app/routers/verification.py
+@@ -0,0 +1,10 @@
++
++from fastapi import APIRouter
++from app.core.database import db
++
++router = APIRouter(prefix="/verify", tags=["Verification"])
++
++@router.post("/{waid}")
++async def verify(waid: str):
++    await db.waste_actions.update_one({"waid": waid}, {"$set": {"verified": True}})
++    return {"verified": True}
+diff --git a/backend/app/routers/wallet.py b/backend/app/routers/wallet.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b496b158eb99a6879849071fc3f4328dacb46c9f
+--- /dev/null
++++ b/backend/app/routers/wallet.py
+@@ -0,0 +1,15 @@
++
++from fastapi import APIRouter, Depends
++from app.core.security import get_current_user
++from app.core.database import db
++from app.services.wallet_rules import is_withdrawable
++
++router = APIRouter(prefix="/wallet", tags=["Wallet"])
++
++@router.get("/me")
++async def wallet_me(user_id: str = Depends(get_current_user)):
++    wallet = await db.wallets.find_one({"user_id": user_id})
++    ledger = await db.wallet_ledger.find({"wallet_id": wallet["_id"], "status": "confirmed"}).to_list(1000)
++    withdrawable = sum(e["amount"] for e in ledger if e["amount"] > 0 and is_withdrawable(e["rail"]))
++    locked = sum(e["amount"] for e in ledger if e["amount"] > 0 and not is_withdrawable(e["rail"]))
++    return {"withdrawable_balance": withdrawable, "locked_balance": locked, "ledger": ledger}
+diff --git a/backend/app/routers/waste.py b/backend/app/routers/waste.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..477ec9bbf6048160c5e5e72a36929c35b2878b6e
+--- /dev/null
++++ b/backend/app/routers/waste.py
+@@ -0,0 +1,13 @@
++
++from fastapi import APIRouter
++from uuid import uuid4
++from app.core.database import db
++
++router = APIRouter(prefix="/waste", tags=["Waste"])
++
++@router.post("")
++async def create_waste(payload: dict):
++    payload["waid"] = f"WA-{uuid4().hex[:8]}"
++    payload["verified"] = False
++    await db.waste_actions.insert_one(payload)
++    return payload
+diff --git a/backend/app/routers/withdrawal.py b/backend/app/routers/withdrawal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5a97b61ab701111e794fc516b7bcb0ef7ec324bb
+--- /dev/null
++++ b/backend/app/routers/withdrawal.py
+@@ -0,0 +1,25 @@
++
++from fastapi import APIRouter, Depends, HTTPException
++from uuid import uuid4
++from app.core.security import get_current_user
++from app.core.database import db
++from app.services.wallet_rules import is_withdrawable
++
++router = APIRouter(prefix="/withdraw", tags=["Withdrawal"])
++
++@router.post("")
++async def withdraw(amount: float, destination: str, user_id: str = Depends(get_current_user)):
++    wallet = await db.wallets.find_one({"user_id": user_id})
++    ledger = await db.wallet_ledger.find({"wallet_id": wallet["_id"], "status": "confirmed"}).to_list(1000)
++    withdrawable = sum(e["amount"] for e in ledger if e["amount"] > 0 and is_withdrawable(e["rail"]))
++    if amount > withdrawable:
++        raise HTTPException(400, "Insufficient balance")
++    entry = {
++        "entry_id": f"L-{uuid4().hex[:8]}",
++        "wallet_id": wallet["_id"],
++        "rail": "WITHDRAWAL",
++        "amount": -amount,
++        "status": "confirmed"
++    }
++    await db.wallet_ledger.insert_one(entry)
++    return {"status": "processing"}
+diff --git a/backend/app/services/wallet_rules.py b/backend/app/services/wallet_rules.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4232a993d8611bbf5001b51376646a4f4498cf2f
+--- /dev/null
++++ b/backend/app/services/wallet_rules.py
+@@ -0,0 +1,11 @@
++
++RAIL_POLICY = {
++    "CSR": True,
++    "MUNICIPAL": True,
++    "RECYCLER": True,
++    "CARBON": False,
++    "EPR": False
++}
++
++def is_withdrawable(rail: str) -> bool:
++    return RAIL_POLICY.get(rail, False)
+diff --git a/backend/requirements.txt b/backend/requirements.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..f8be036c3192645920e72d282fad37471edf5100
+--- /dev/null
++++ b/backend/requirements.txt
+@@ -0,0 +1,5 @@
++fastapi==0.115.6
++uvicorn[standard]==0.34.0
++motor==3.6.0
++python-jose==3.3.0
++pydantic==1.10.19
+diff --git a/deploy/docker-compose.hostinger.yml b/deploy/docker-compose.hostinger.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..8816ff109f8d4a710f3e5174b173c39c51b1675f
+--- /dev/null
++++ b/deploy/docker-compose.hostinger.yml
+@@ -0,0 +1,46 @@
++services:
++  backend:
++    build:
++      context: ../backend
++    container_name: rupaykg-backend
++    env_file:
++      - ../.env
++    restart: unless-stopped
++    depends_on:
++      - mongo
++
++  frontend:
++    build:
++      context: ../frontend
++    container_name: rupaykg-frontend
++    environment:
++      NEXT_PUBLIC_API_URL: /api
++      NEXT_PUBLIC_WALLET_BEARER_TOKEN: ${NEXT_PUBLIC_WALLET_BEARER_TOKEN:-}
++    restart: unless-stopped
++    depends_on:
++      - backend
++
++  mongo:
++    image: mongo:7
++    container_name: rupaykg-mongo
++    restart: unless-stopped
++    volumes:
++      - mongo_data:/data/db
++
++  nginx:
++    image: nginx:1.27-alpine
++    container_name: rupaykg-nginx
++    restart: unless-stopped
++    ports:
++      - "80:80"
++      - "443:443"
++    volumes:
++      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
++      - ./certbot/www:/var/www/certbot
++      - ./certbot/conf:/etc/letsencrypt
++    depends_on:
++      - frontend
++      - backend
++
++volumes:
++  mongo_data:
+diff --git a/deploy/hostinger-deploy.sh b/deploy/hostinger-deploy.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..2ce18a191589adfdf0df7a8207c14dc0e9cb024c
+--- /dev/null
++++ b/deploy/hostinger-deploy.sh
+@@ -0,0 +1,18 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++PROJECT_DIR=${PROJECT_DIR:-/opt/rupaykg-enterprise}
++COMPOSE_FILE="$PROJECT_DIR/deploy/docker-compose.hostinger.yml"
++
++cd "$PROJECT_DIR"
++
++if [ ! -f .env ]; then
++  echo "Missing .env file. Copy .env.example and update production values before deploying."
++  exit 1
++fi
++
++docker compose -f "$COMPOSE_FILE" pull mongo nginx || true
++docker compose -f "$COMPOSE_FILE" up -d --build
++
++echo "Deployment finished."
++echo "Check services: docker compose -f $COMPOSE_FILE ps"
+diff --git a/deploy/nginx/default.conf b/deploy/nginx/default.conf
+new file mode 100644
+index 0000000000000000000000000000000000000000..4aade0e18dd8f2386a9a179c7d90a542cefa1d12
+--- /dev/null
++++ b/deploy/nginx/default.conf
+@@ -0,0 +1,23 @@
++server {
++    listen 80;
++    server_name _;
++
++    location / {
++        proxy_pass http://frontend:3000;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++    }
++
++    location /api/ {
++        rewrite ^/api/?(.*)$ /$1 break;
++        proxy_pass http://backend:8080;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++    }
++}
+diff --git a/frontend/.dockerignore b/frontend/.dockerignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..32b3ece961484ed39bec17bbc25bf5b141adc05f
+--- /dev/null
++++ b/frontend/.dockerignore
+@@ -0,0 +1,3 @@
++node_modules
++.next
++npm-debug.log
+diff --git a/frontend/Dockerfile b/frontend/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..6e03a6dd396115e9e969bdb50f4c2bbaa74dd981
+--- /dev/null
++++ b/frontend/Dockerfile
+@@ -0,0 +1,21 @@
++FROM node:20-alpine AS deps
++WORKDIR /app
++COPY package*.json ./
++RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
++
++FROM node:20-alpine AS builder
++WORKDIR /app
++COPY --from=deps /app/node_modules ./node_modules
++COPY . .
++RUN npm run build
++
++FROM node:20-alpine AS runner
++WORKDIR /app
++ENV NODE_ENV=production
++COPY --from=builder /app/package*.json ./
++COPY --from=builder /app/.next ./.next
++COPY --from=builder /app/public ./public
++COPY --from=builder /app/node_modules ./node_modules
++
++EXPOSE 3000
++CMD ["npm", "run", "start", "--", "-p", "3000", "-H", "0.0.0.0"]
+diff --git a/frontend/next-env.d.ts b/frontend/next-env.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..84ab714bdef68903103f153806cfe168ecbb94f8
+--- /dev/null
++++ b/frontend/next-env.d.ts
+@@ -0,0 +1,4 @@
++/// <reference types="next" />
++/// <reference types="next/image-types/global" />
++
++// NOTE: This file should not be edited
+diff --git a/frontend/package.json b/frontend/package.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba6d6a66e129f0939849928be16173a7f7c2e589
+--- /dev/null
++++ b/frontend/package.json
+@@ -0,0 +1,21 @@
++{
++  "name": "rupaykg-frontend",
++  "private": true,
++  "version": "1.0.0",
++  "scripts": {
++    "dev": "next dev",
++    "build": "next build",
++    "start": "next start"
++  },
++  "dependencies": {
++    "next": "14.2.32",
++    "react": "18.3.1",
++    "react-dom": "18.3.1"
++  },
++  "devDependencies": {
++    "@types/node": "20.17.17",
++    "@types/react": "18.3.18",
++    "@types/react-dom": "18.3.5",
++    "typescript": "5.7.3"
++  }
++}
+diff --git a/frontend/public/.gitkeep b/frontend/public/.gitkeep
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/frontend/src/pages/index.tsx b/frontend/src/pages/index.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..488b55747d4b1aeddd8d9d8c07c756e10697aa9a
+--- /dev/null
++++ b/frontend/src/pages/index.tsx
+@@ -0,0 +1,8 @@
++export default function Home() {
++  return (
++    <main style={{ fontFamily: "sans-serif", padding: "2rem" }}>
++      <h1>RuPayKG Wallet</h1>
++      <p>Visit <a href="/wallet">/wallet</a> to view your wallet dashboard.</p>
++    </main>
++  );
++}
+diff --git a/frontend/src/pages/wallet.tsx b/frontend/src/pages/wallet.tsx
+new file mode 100644
+index 0000000000000000000000000000000000000000..05b27fe4eb2076f794a585b14a15880ff7e6eb1b
+--- /dev/null
++++ b/frontend/src/pages/wallet.tsx
+@@ -0,0 +1,49 @@
++import { useEffect, useState } from "react";
++
++type WalletResponse = {
++  withdrawable_balance: number;
++  locked_balance: number;
++  ledger: unknown;
++};
++
++const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
++const WALLET_BEARER_TOKEN = process.env.NEXT_PUBLIC_WALLET_BEARER_TOKEN;
++
++export default function Wallet() {
++  const [data, setData] = useState<WalletResponse | null>(null);
++  const [error, setError] = useState<string | null>(null);
++
++  useEffect(() => {
++    const headers: HeadersInit = {};
++    if (WALLET_BEARER_TOKEN) {
++      headers.Authorization = `Bearer ${WALLET_BEARER_TOKEN}`;
++    }
++
++    fetch(`${API_BASE_URL}/wallet/me`, { headers })
++      .then(async (response) => {
++        if (!response.ok) {
++          throw new Error(`Wallet API failed with status ${response.status}`);
++        }
++
++        return response.json();
++      })
++      .then(setData)
++      .catch((err: Error) => {
++        setError(err.message);
++      });
++  }, []);
++
++  if (error) {
++    return <div>Failed to load wallet data: {error}</div>;
++  }
++
++  if (!data) return <div>Loading...</div>;
++
++  return (
++    <div>
++      <h2>Withdrawable ₹{data.withdrawable_balance}</h2>
++      <h3>Locked ₹{data.locked_balance}</h3>
++      <pre>{JSON.stringify(data.ledger, null, 2)}</pre>
++    </div>
++  );
++}
+diff --git a/frontend/tsconfig.json b/frontend/tsconfig.json
+new file mode 100644
+index 0000000000000000000000000000000000000000..986b22ae3330f458d60b71900165d1c8b6a27e37
+--- /dev/null
++++ b/frontend/tsconfig.json
+@@ -0,0 +1,20 @@
++{
++  "compilerOptions": {
++    "target": "es5",
++    "lib": ["dom", "dom.iterable", "esnext"],
++    "allowJs": false,
++    "skipLibCheck": true,
++    "strict": true,
++    "noEmit": true,
++    "esModuleInterop": true,
++    "module": "esnext",
++    "moduleResolution": "bundler",
++    "resolveJsonModule": true,
++    "isolatedModules": true,
++    "jsx": "preserve",
++    "incremental": true,
++    "types": ["node"]
++  },
++  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
++  "exclude": ["node_modules"]
++}
+ 
+EOF
+)
