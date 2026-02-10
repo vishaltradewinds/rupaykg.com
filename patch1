@@ -1,0 +1,444 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
+diff --git a/README.md b/README.md
+index 26c874fce1ea1433ce90bc39646bb8e9d899e6e6..31cb08f735c2f07d469fe1ceab51274717d8e564 100644
+--- a/README.md
++++ b/README.md
+@@ -1,99 +1,128 @@
+ # RupayKG Enterprise
+ 
++RupayKG is a monorepo with:
++- **FastAPI backend** in `backend/`
++- **Next.js frontend** in `frontend/`
+ 
+-## Environment template
++This project now includes a production-ready Docker Compose setup for **Hostinger VPS** deployments.
+ 
+-Copy the deployment-ready environment template before local runs or when setting platform variables:
++## 1) Environment setup
++
++Copy and edit the environment file before any deployment:
+ 
+ ```bash
+ cp .env.example .env
+ ```
+ 
+-Update values for your target environment (local, Railway, or Vercel).
++Minimum production values:
++- `ENV=prod`
++- `SYSTEM_STATUS=ACTIVE`
++- `MONGODB_URI=mongodb://mongo:27017` (for Docker Compose internal network)
++- `JWT_SECRET=<strong-random-secret>`
++- `BACKEND_CORS_ORIGINS=https://your-domain.com`
++- `NEXT_PUBLIC_WALLET_BEARER_TOKEN=<optional>`
++
++> For Hostinger setup in this repo, `NEXT_PUBLIC_API_URL` is injected as `/api` in compose so frontend and backend work under one domain.
+ 
+ ---
+ 
+-## Deploying the website to Vercel
++## 2) Deploying to Hostinger VPS (recommended)
+ 
+-This repository includes a Vercel configuration for deploying the Next.js frontend from `frontend/`.
++### Prerequisites on VPS
+ 
+-### 1) Install dependencies locally
++Install Docker + Docker Compose plugin on Ubuntu:
+ 
+ ```bash
+-cd frontend
+-npm install
++sudo apt-get update
++sudo apt-get install -y ca-certificates curl gnupg
++sudo install -m 0755 -d /etc/apt/keyrings
++curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
++sudo chmod a+r /etc/apt/keyrings/docker.gpg
++
++echo \
++  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
++  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
++  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
++
++sudo apt-get update
++sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+ ```
+ 
+-### 2) Run a local production build check
++### Deployment steps
+ 
+ ```bash
+-npm run build
+-```
+-
+-### 3) Deploy with Vercel CLI
+-
+-From the repository root:
++git clone <your-repo-url> /opt/rupaykg-enterprise
++cd /opt/rupaykg-enterprise
++cp .env.example .env
++nano .env
+ 
+-```bash
+-npx vercel --prod
++./deploy/hostinger-deploy.sh
+ ```
+ 
+-When prompted:
+-- Set the project root to `./` (the included `vercel.json` handles building `frontend/package.json`).
+-- Add `NEXT_PUBLIC_API_URL` to your Vercel environment variables (for example your Railway backend URL).
+-- Add `NEXT_PUBLIC_WALLET_BEARER_TOKEN` if your wallet endpoint requires JWT auth.
++This launches:
++- `frontend` on internal port `3000`
++- `backend` on internal port `8080`
++- `mongo` for persistence
++- `nginx` exposing ports `80/443`
+ 
+-### 4) Optional: pull Vercel env vars locally
++### Health check
+ 
+ ```bash
+-npx vercel env pull frontend/.env.local
++curl http://<server-ip>/api/health
+ ```
+ 
+-Then run:
++Expected response:
+ 
+-```bash
+-cd frontend
+-npm run dev
++```json
++{"status":"ok"}
+ ```
+ 
+ ---
+ 
+-## Deploying the API to Railway
++## 3) TLS/HTTPS on Hostinger
+ 
+-The FastAPI backend is in `backend/` and is configured for Railway with `railway.json`.
++The Nginx container includes paths for Let's Encrypt cert mounting:
++- `deploy/certbot/conf`
++- `deploy/certbot/www`
+ 
+-### 1) Connect this repository in Railway
++You can attach certbot in your VPS workflow and mount issued certs into Nginx, then extend `deploy/nginx/default.conf` for SSL server blocks.
+ 
+-Railway will automatically use Nixpacks and run:
++---
++
++## 4) Local development
++
++### Frontend
+ 
+ ```bash
+-cd backend && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
++cd frontend
++npm install
++npm run dev
+ ```
+ 
+-### 2) Set Railway environment variables
++### Backend
+ 
+-Set the following in Railway:
++```bash
++cd backend
++python -m venv .venv
++source .venv/bin/activate
++pip install -r requirements.txt
++uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
++```
+ 
+-- `MONGODB_URI`
+-- `JWT_SECRET`
+-- `BACKEND_CORS_ORIGINS` (comma-separated list, e.g. `https://your-vercel-app.vercel.app`)
+-- `SYSTEM_STATUS` (`ACTIVE` in normal operation)
+-- Optional payment keys:
+-  - `CASHFREE_CLIENT_ID`
+-  - `CASHFREE_CLIENT_SECRET`
+-  - `RAZORPAY_KEY_ID`
+-  - `RAZORPAY_KEY_SECRET`
++---
+ 
+-### 3) Verify health
++## 5) Useful operations on VPS
+ 
+-After deploy, open:
++```bash
++# service status
++docker compose -f deploy/docker-compose.hostinger.yml ps
+ 
+-```text
+-https://<your-railway-domain>/health
+-```
++# logs
++docker compose -f deploy/docker-compose.hostinger.yml logs -f --tail=100
+ 
+-A healthy deployment returns:
++# restart
++docker compose -f deploy/docker-compose.hostinger.yml restart
+ 
+-```json
+-{"status":"ok"}
++# shutdown
++docker compose -f deploy/docker-compose.hostinger.yml down
+ ```
+diff --git a/backend/.dockerignore b/backend/.dockerignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..d36a828b07c289930dc9dbe36aff1b872506f5ce
+--- /dev/null
++++ b/backend/.dockerignore
+@@ -0,0 +1,5 @@
++__pycache__
++*.pyc
++*.pyo
++*.pyd
++.venv
+diff --git a/backend/Dockerfile b/backend/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb95c54262cdc8aa933da706937cdfaa3ed7b8d9
+--- /dev/null
++++ b/backend/Dockerfile
+@@ -0,0 +1,15 @@
++FROM python:3.11-slim
++
++WORKDIR /app
++
++ENV PYTHONDONTWRITEBYTECODE=1
++ENV PYTHONUNBUFFERED=1
++
++COPY requirements.txt .
++RUN pip install --no-cache-dir -r requirements.txt
++
++COPY app ./app
++
++EXPOSE 8080
++
++CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+diff --git a/backend/app/main.py b/backend/app/main.py
+index c8cfc09e1ccdb6deabcd5414f8aa37de1d90e810..7a2e1294774483cbed078c5ac5433298ca0cefa8 100644
+--- a/backend/app/main.py
++++ b/backend/app/main.py
+@@ -1,31 +1,32 @@
+ from fastapi import FastAPI, HTTPException
+ from fastapi.middleware.cors import CORSMiddleware
+ 
+ from app.core.config import settings
+ from app.routers import auth, verification, wallet, waste, withdrawal
+ 
+ app = FastAPI(title="RupayKg API", version="1.0.0")
+ 
+ allowed_origins = [origin.strip() for origin in settings.BACKEND_CORS_ORIGINS.split(",") if origin.strip()]
++allow_all_origins = allowed_origins == ["*"]
+ 
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=allowed_origins or ["*"],
+-    allow_credentials=True,
++    allow_origins=["*"] if allow_all_origins else allowed_origins,
++    allow_credentials=not allow_all_origins,
+     allow_methods=["*"],
+     allow_headers=["*"],
+ )
+ 
+ 
+ @app.get("/health")
+ def health():
+     if settings.SYSTEM_STATUS != "ACTIVE":
+         raise HTTPException(503, "System paused")
+     return {"status": "ok"}
+ 
+ 
+ app.include_router(auth.router)
+ app.include_router(waste.router)
+ app.include_router(verification.router)
+ app.include_router(wallet.router)
+ app.include_router(withdrawal.router)
+diff --git a/deploy/docker-compose.hostinger.yml b/deploy/docker-compose.hostinger.yml
+new file mode 100644
+index 0000000000000000000000000000000000000000..8816ff109f8d4a710f3e5174b173c39c51b1675f
+--- /dev/null
++++ b/deploy/docker-compose.hostinger.yml
+@@ -0,0 +1,46 @@
++services:
++  backend:
++    build:
++      context: ../backend
++    container_name: rupaykg-backend
++    env_file:
++      - ../.env
++    restart: unless-stopped
++    depends_on:
++      - mongo
++
++  frontend:
++    build:
++      context: ../frontend
++    container_name: rupaykg-frontend
++    environment:
++      NEXT_PUBLIC_API_URL: /api
++      NEXT_PUBLIC_WALLET_BEARER_TOKEN: ${NEXT_PUBLIC_WALLET_BEARER_TOKEN:-}
++    restart: unless-stopped
++    depends_on:
++      - backend
++
++  mongo:
++    image: mongo:7
++    container_name: rupaykg-mongo
++    restart: unless-stopped
++    volumes:
++      - mongo_data:/data/db
++
++  nginx:
++    image: nginx:1.27-alpine
++    container_name: rupaykg-nginx
++    restart: unless-stopped
++    ports:
++      - "80:80"
++      - "443:443"
++    volumes:
++      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
++      - ./certbot/www:/var/www/certbot
++      - ./certbot/conf:/etc/letsencrypt
++    depends_on:
++      - frontend
++      - backend
++
++volumes:
++  mongo_data:
+diff --git a/deploy/hostinger-deploy.sh b/deploy/hostinger-deploy.sh
+new file mode 100755
+index 0000000000000000000000000000000000000000..2ce18a191589adfdf0df7a8207c14dc0e9cb024c
+--- /dev/null
++++ b/deploy/hostinger-deploy.sh
+@@ -0,0 +1,18 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++PROJECT_DIR=${PROJECT_DIR:-/opt/rupaykg-enterprise}
++COMPOSE_FILE="$PROJECT_DIR/deploy/docker-compose.hostinger.yml"
++
++cd "$PROJECT_DIR"
++
++if [ ! -f .env ]; then
++  echo "Missing .env file. Copy .env.example and update production values before deploying."
++  exit 1
++fi
++
++docker compose -f "$COMPOSE_FILE" pull mongo nginx || true
++docker compose -f "$COMPOSE_FILE" up -d --build
++
++echo "Deployment finished."
++echo "Check services: docker compose -f $COMPOSE_FILE ps"
+diff --git a/deploy/nginx/default.conf b/deploy/nginx/default.conf
+new file mode 100644
+index 0000000000000000000000000000000000000000..4aade0e18dd8f2386a9a179c7d90a542cefa1d12
+--- /dev/null
++++ b/deploy/nginx/default.conf
+@@ -0,0 +1,23 @@
++server {
++    listen 80;
++    server_name _;
++
++    location / {
++        proxy_pass http://frontend:3000;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++    }
++
++    location /api/ {
++        rewrite ^/api/?(.*)$ /$1 break;
++        proxy_pass http://backend:8080;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++    }
++}
+diff --git a/frontend/.dockerignore b/frontend/.dockerignore
+new file mode 100644
+index 0000000000000000000000000000000000000000..32b3ece961484ed39bec17bbc25bf5b141adc05f
+--- /dev/null
++++ b/frontend/.dockerignore
+@@ -0,0 +1,3 @@
++node_modules
++.next
++npm-debug.log
+diff --git a/frontend/Dockerfile b/frontend/Dockerfile
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a2dcf05005291e4588b4737a71104b644fe38a8
+--- /dev/null
++++ b/frontend/Dockerfile
+@@ -0,0 +1,22 @@
++FROM node:20-alpine AS deps
++WORKDIR /app
++COPY package.json package-lock.json ./
++RUN npm ci
++
++FROM node:20-alpine AS builder
++WORKDIR /app
++COPY --from=deps /app/node_modules ./node_modules
++COPY . .
++RUN npm run build
++
++FROM node:20-alpine AS runner
++WORKDIR /app
++ENV NODE_ENV=production
++COPY --from=builder /app/package.json ./package.json
++COPY --from=builder /app/package-lock.json ./package-lock.json
++COPY --from=builder /app/.next ./.next
++COPY --from=builder /app/public ./public
++COPY --from=builder /app/node_modules ./node_modules
++
++EXPOSE 3000
++CMD ["npm", "run", "start", "--", "-p", "3000", "-H", "0.0.0.0"]
+diff --git a/frontend/public/.gitkeep b/frontend/public/.gitkeep
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/frontend/src/pages/wallet.tsx b/frontend/src/pages/wallet.tsx
+index 2a51cc3b15b7a02d5a15cf99c5ef290c9d5d8838..05b27fe4eb2076f794a585b14a15880ff7e6eb1b 100644
+--- a/frontend/src/pages/wallet.tsx
++++ b/frontend/src/pages/wallet.tsx
+@@ -1,34 +1,34 @@
+ import { useEffect, useState } from "react";
+ 
+ type WalletResponse = {
+   withdrawable_balance: number;
+   locked_balance: number;
+   ledger: unknown;
+ };
+ 
+-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8080";
++const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api";
+ const WALLET_BEARER_TOKEN = process.env.NEXT_PUBLIC_WALLET_BEARER_TOKEN;
+ 
+ export default function Wallet() {
+   const [data, setData] = useState<WalletResponse | null>(null);
+   const [error, setError] = useState<string | null>(null);
+ 
+   useEffect(() => {
+     const headers: HeadersInit = {};
+     if (WALLET_BEARER_TOKEN) {
+       headers.Authorization = `Bearer ${WALLET_BEARER_TOKEN}`;
+     }
+ 
+     fetch(`${API_BASE_URL}/wallet/me`, { headers })
+       .then(async (response) => {
+         if (!response.ok) {
+           throw new Error(`Wallet API failed with status ${response.status}`);
+         }
+ 
+         return response.json();
+       })
+       .then(setData)
+       .catch((err: Error) => {
+         setError(err.message);
+       });
+   }, []);
+ 
+EOF
+)
