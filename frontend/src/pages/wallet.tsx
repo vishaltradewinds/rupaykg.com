@@ -14,10 +14,17 @@ export default function Wallet() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const headers: HeadersInit = {};
-    if (WALLET_BEARER_TOKEN) {
-      headers.Authorization = `Bearer ${WALLET_BEARER_TOKEN}`;
+    const browserToken = typeof window !== "undefined" ? localStorage.getItem("rupaykg_token") : null;
+    const token = browserToken || WALLET_BEARER_TOKEN;
+
+    if (!token) {
+      setError("No token found. Set NEXT_PUBLIC_WALLET_BEARER_TOKEN or store rupaykg_token in localStorage.");
+      return;
     }
+
+    const headers: HeadersInit = {
+      Authorization: `Bearer ${token}`,
+    };
 
     fetch(`${API_BASE_URL}/wallet/me`, { headers })
       .then(async (response) => {
